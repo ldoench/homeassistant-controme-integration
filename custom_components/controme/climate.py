@@ -24,6 +24,7 @@ from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
 )
 
+from .device import link_to_hub
 from .const import (
     DOMAIN,
     CONF_API_URL,
@@ -64,12 +65,15 @@ async def async_setup_entry(
             room_name = room.get("name", f"Room {room_id}")
             room["floor_id"] = floor_id
 
-            device_info = DeviceInfo(
-                identifiers={(DOMAIN, f"{house_id}_{floor_id}_{room_id}")},
-                name=room_name,
-                manufacturer="Controme",
-                model="Thermostat API",
-                via_device=(DOMAIN, f"{house_id}"),
+            device_info = link_to_hub(
+                DeviceInfo(
+                    identifiers={(DOMAIN, f"{house_id}_{floor_id}_{room_id}")},
+                    name=room_name,
+                    manufacturer="Controme",
+                    model="Thermostat API",
+                ),
+                coordinator.hub_device_id,
+                house_id,
             )
 
             climate_devices.append(

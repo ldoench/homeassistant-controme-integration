@@ -42,6 +42,7 @@ class ContromeDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         self._house_id = house_id
         self._username = username
         self._password = password
+        self.hub_device_id: str | None = None
         self.permissions: Dict[str, bool] = {
             "can_make_permanent_changes": True,
             "can_make_temporary_changes": True,

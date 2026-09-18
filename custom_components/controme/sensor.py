@@ -17,6 +17,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .device import link_to_hub
 from .const import (
     DOMAIN, 
     CONF_API_URL, 
@@ -113,12 +114,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
             # Add room data
             room["floor_id"] = floor_id
-            device_info = DeviceInfo(
-                identifiers={(DOMAIN, f"{house_id}_{floor_id}_{room_id}")},
-                name=room_name,
-                manufacturer="Controme",
-                model="Room",
-                via_device=(DOMAIN, house_id),
+            device_info = link_to_hub(
+                DeviceInfo(
+                    identifiers={(DOMAIN, f"{house_id}_{floor_id}_{room_id}")},
+                    name=room_name,
+                    manufacturer="Controme",
+                    model="Room",
+                ),
+                coordinator.hub_device_id,
+                house_id,
             )
 
             # Add basic sensors
