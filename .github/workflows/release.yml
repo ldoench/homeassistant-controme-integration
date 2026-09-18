@@ -27,12 +27,6 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: "ZIP the integration directory"
-        shell: "bash"
-        run: |
-          cd "${{ github.workspace }}/custom_components/controme"
-          zip controme.zip -r ./
-
       - name: "Update the integration manifest version"
         shell: "bash"
         env:
@@ -52,10 +46,10 @@ jobs:
       - name: "Package the integration"
         shell: "bash"
         run: |
-          mkdir -p dist
-          cd "${{ github.workspace }}"
+          mkdir -p "${{ github.workspace }}/dist"
+          cd "${{ github.workspace }}/custom_components/controme"
           zip -r "${{ github.workspace }}/dist/controme.zip" . \
-            -x '.git/*' '.github/*' '.venv/*' '.pytest_cache/*' 'dist/*'
+            -x '__pycache__/*' '*/__pycache__/*'
 
       - name: "Create the GitHub release"
         env:
