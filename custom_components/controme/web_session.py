@@ -15,6 +15,7 @@ transparently re-authenticating when it expires.
 from __future__ import annotations
 
 import asyncio
+from html.parser import HTMLParser
 import logging
 import re
 from typing import Optional
@@ -30,7 +31,27 @@ ROOM_FRAGMENT_PATH = "/m_raum_temp_html/{room_id}/"
 REQUEST_TIMEOUT = ClientTimeout(total=10)
 
 _CSRF_RE = re.compile(r"name=['\"]csrfmiddlewaretoken['\"] value=['\"]([^'\"]+)['\"]")
-_BEAM_RE = re.compile(r'class="beam-width-value"\s+value="([\d.]+)"')
+
+
+class _BeamWidthParser(HTMLParser):
+    """Extracts the ``value`` of the room card's ``beam-width-value`` input.
+
+    Uses the stdlib HTML parser instead of a regex so this survives the
+    Controme UI reordering attributes or changing whitespace - it only
+    breaks if the class name or tag itself changes.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.value: Optional[str] = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self.value is not None or tag != "input":
+            return
+        attrs_dict = dict(attrs)
+        classes = (attrs_dict.get("class") or "").split()
+        if "beam-width-value" in classes:
+            self.value = attrs_dict.get("value")
 
 
 class ContromeWebAuthError(Exception):
@@ -144,8 +165,9 @@ class ContromeWebSession:
                 return None
             html = await response.text()
 
-        match = _BEAM_RE.search(html)
-        if not match:
+        parser = _BeamWidthParser()
+        parser.feed(html)
+        if parser.value is None:
             _LOGGER.debug(
                 "Could not find heating-output value in room %s page "
                 "(Controme web UI layout may have changed)",
@@ -153,7 +175,7 @@ class ContromeWebSession:
             )
             return None
         try:
-            return float(match.group(1))
+            return float(parser.value)
         except ValueError:
             return None
 
