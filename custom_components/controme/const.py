@@ -26,6 +26,7 @@ SENSOR_TYPE_HUMIDITY = "humidity"
 SENSOR_TYPE_RETURN = "return"
 SENSOR_TYPE_TOTAL_OFFSET = "total_offset"
 SENSOR_TYPE_OPERATION_MODE = "operation_mode"
+SENSOR_TYPE_HEATING_OUTPUT = "heating_output"
 
 # Map sensor types to API data keys
 VALUE_MAP = {
@@ -34,4 +35,5 @@ VALUE_MAP = {
     SENSOR_TYPE_HUMIDITY: "luftfeuchte",
     SENSOR_TYPE_TOTAL_OFFSET: "total_offset",
     SENSOR_TYPE_OPERATION_MODE: "betriebsart",
+    SENSOR_TYPE_HEATING_OUTPUT: "heating_output",
 }

@@ -7,7 +7,14 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.exceptions import ConfigEntryNotReady
 from .coordinator import ContromeDataUpdateCoordinator
-from .const import DOMAIN, CONF_HAUS_ID, CONF_API_URL, CONF_USER, CONF_PASSWORD, CONF_DURATION_OPTION
+from .const import (
+    DOMAIN,
+    CONF_HAUS_ID,
+    CONF_API_URL,
+    CONF_USER,
+    CONF_PASSWORD,
+    CONF_DURATION_OPTION,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -83,7 +90,11 @@ def _async_cleanup_stale_devices(
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unload_ok:
+        coordinator: ContromeDataUpdateCoordinator = entry.runtime_data
+        await coordinator.async_close()
+    return unload_ok
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Migrate config entry."""

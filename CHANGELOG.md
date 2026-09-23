@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Enhancements
+- **Heating output sensor**: New sensor per room showing the current heating output (0-100%),
+  which is not exposed by the public JSON API - only the logged-in Controme web UI has it. Reuses
+  the existing API username/password to log in and re-authenticates automatically when the
+  session expires, no manual session-cookie copying needed.
+
 ## 1.2.0 (2027-07-31)
 
 ### Enhancements

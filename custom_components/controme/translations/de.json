@@ -63,6 +63,9 @@
             "total_offset": {
                 "name": "Gesamtoffset"
             },
+            "heating_output": {
+                "name": "Heizleistung"
+            },
             "operation_mode": {
                 "name": "Betriebsart",
                 "state": {

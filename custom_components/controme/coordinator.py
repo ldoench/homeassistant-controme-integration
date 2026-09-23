@@ -13,6 +13,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DOMAIN
+from .web_session import ContromeWebAuthError, ContromeWebSession
 
 PERMISSIONS_ENDPOINT = "permissions"
 
@@ -47,6 +48,53 @@ class ContromeDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             "can_make_permanent_changes": True,
             "can_make_temporary_changes": True,
         }
+
+        # The heating-output ("Regelschritt") sensor is scraped from the
+        # logged-in web UI, which is not covered by the JSON API's Basic
+        # Auth above. Controme accepts the same account for both, so this
+        # reuses the API username/password rather than asking for separate
+        # web-UI credentials.
+        self._web_session = ContromeWebSession(base_url, username, password)
+        self._web_auth_failed_logged = False
+
+    async def async_close(self) -> None:
+        """Release resources held by the coordinator."""
+        await self._web_session.async_close()
+
+    async def _async_merge_heating_output(self, data: list) -> None:
+        """Fetch the heating-output percentage per room and merge it in.
+
+        Best-effort: any failure here (wrong web credentials, UI unreachable,
+        page layout changed) is logged and leaves ``heating_output`` as None
+        for this cycle rather than failing the whole update - the temperature
+        sensors must keep working regardless.
+        """
+        for floor in data:
+            for room in floor.get("raeume", []):
+                room_id = room.get("id")
+                if room_id is None:
+                    continue
+                try:
+                    room["heating_output"] = await self._web_session.async_get_regelschritt(
+                        room_id
+                    )
+                except ContromeWebAuthError:
+                    if not self._web_auth_failed_logged:
+                        _LOGGER.warning(
+                            "Controme web-UI login failed with the configured "
+                            "user/password. Heating output sensors will be "
+                            "unavailable until this is fixed"
+                        )
+                        self._web_auth_failed_logged = True
+                    room["heating_output"] = None
+                    continue
+                except Exception as ex:  # noqa: BLE001
+                    _LOGGER.debug(
+                        "Failed to fetch heating output for room %s: %s", room_id, ex
+                    )
+                    room["heating_output"] = None
+                    continue
+                self._web_auth_failed_logged = False
 
     async def _async_update_data(self) -> Dict[str, Any]:
         """Fetch data from Controme API."""
@@ -117,6 +165,8 @@ class ContromeDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                             if k not in ["password", "token"]
                         }
                         _LOGGER.debug("Sample room data: %s", safe_sample)
+
+                await self._async_merge_heating_output(data)
 
                 return data
             except ConfigEntryAuthFailed:

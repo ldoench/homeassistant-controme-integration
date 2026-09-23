@@ -63,6 +63,9 @@
             "total_offset": {
                 "name": "Total Offset"
             },
+            "heating_output": {
+                "name": "Heating Output"
+            },
             "operation_mode": {
                 "name": "Operation Mode",
                 "state": {

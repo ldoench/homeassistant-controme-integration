@@ -71,6 +71,13 @@ SENSOR_TYPES: tuple[ContromeSensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=PERCENTAGE,
     ),
+    ContromeSensorEntityDescription(
+        key="heating_output",
+        translation_key="heating_output",
+        icon="mdi:radiator",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=PERCENTAGE,
+    ),
 )
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):

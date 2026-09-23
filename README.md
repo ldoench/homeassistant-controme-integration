@@ -16,6 +16,7 @@ Home Assistant integration for Controme heating systems. This integration allows
 - Return temperature sensors
 - Total offset display
 - Operation mode status
+- Heating output in % per room
 - Automatic updates every 60 seconds
 
 ## Installation
@@ -39,6 +40,10 @@ Home Assistant integration for Controme heating systems. This integration allows
    - Username
    - Password
 
+   These same credentials are also used to read the heating output sensor from the
+   Controme web UI (which has no separate JSON API) - the integration logs in and
+   refreshes that session on its own.
+
 ## Entities Created
 
 For each room, the integration creates:
@@ -56,6 +61,7 @@ For each room, the integration creates:
 - Return Temperature (if available)
 - Total Offset
 - Operation Mode
+- Heating Output %
 
 ## Supported Languages
 - English
