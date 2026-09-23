@@ -14,6 +14,7 @@ transparently re-authenticating when it expires.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Optional
@@ -57,6 +58,20 @@ class ContromeWebSession:
             cookie_jar=aiohttp.CookieJar(unsafe=True)
         )
         self._authenticated = False
+        # Guards _async_login so concurrent callers (multiple rooms fetched
+        # in parallel) never race into logging in twice. Paired with
+        # _session_generation below so that when several requests discover
+        # the session expired at roughly the same time, only the first one
+        # through the lock actually performs a new login - the rest see the
+        # generation has already moved on and just retry with the fresh
+        # cookie.
+        self._login_lock = asyncio.Lock()
+        self._session_generation = 0
+        # Bounds how many room requests run at once. Controme boxes are
+        # small embedded devices; fetching e.g. 20 rooms fully in parallel
+        # would hit it with 20 simultaneous logged-in requests for no real
+        # benefit over a handful at a time.
+        self._request_semaphore = asyncio.Semaphore(4)
 
     async def async_close(self) -> None:
         """Close the underlying HTTP session."""
@@ -64,24 +79,52 @@ class ContromeWebSession:
 
     async def async_get_regelschritt(self, room_id: int) -> Optional[float]:
         """Return the current heating output (0-100%) for a room, or None."""
-        if not self._authenticated:
-            await self._async_login()
+        await self._async_ensure_login()
+        generation = self._session_generation
 
-        try:
-            return await self._async_fetch_regelschritt(room_id)
-        except _SessionExpired:
-            # Only re-authenticate when the server actually told us the
-            # session cookie is gone (redirect/401/403). A 200 response
-            # whose HTML just didn't contain the expected value is a parse
-            # problem, not an auth problem, and re-logging in on every poll
-            # for that would only hammer the device for no benefit.
-            _LOGGER.debug("Controme web session expired, re-authenticating and retrying")
-            self._authenticated = False
-            await self._async_login()
+        async with self._request_semaphore:
+            try:
+                return await self._async_fetch_regelschritt(room_id)
+            except _SessionExpired:
+                pass
+
+        # Only re-authenticate when the server actually told us the session
+        # cookie is gone (redirect/401/403). A 200 response whose HTML just
+        # didn't contain the expected value is a parse problem, not an auth
+        # problem, and re-logging in on every poll for that would only
+        # hammer the device for no benefit.
+        _LOGGER.debug("Controme web session expired, re-authenticating and retrying")
+        await self._async_relogin(after_generation=generation)
+        async with self._request_semaphore:
             try:
                 return await self._async_fetch_regelschritt(room_id)
             except _SessionExpired:
                 return None
+
+    async def _async_ensure_login(self) -> None:
+        """Log in if no session exists yet."""
+        if self._authenticated:
+            return
+        async with self._login_lock:
+            if not self._authenticated:  # still true after acquiring the lock?
+                await self._async_login()
+                self._session_generation += 1
+
+    async def _async_relogin(self, after_generation: int) -> None:
+        """Force a fresh login, unless someone else already refreshed it.
+
+        ``after_generation`` is the generation this caller observed before
+        its own request failed. If the generation has already moved on by
+        the time we get the lock, another concurrent room fetch hit the
+        same expired session and already logged back in - so there is
+        nothing left to do here.
+        """
+        async with self._login_lock:
+            if self._session_generation != after_generation:
+                return
+            self._authenticated = False
+            await self._async_login()
+            self._session_generation += 1
 
     async def _async_fetch_regelschritt(self, room_id: int) -> Optional[float]:
         url = f"{self._base_url}{ROOM_FRAGMENT_PATH.format(room_id=room_id)}"

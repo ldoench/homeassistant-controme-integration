@@ -68,33 +68,53 @@ class ContromeDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         page layout changed) is logged and leaves ``heating_output`` as None
         for this cycle rather than failing the whole update - the temperature
         sensors must keep working regardless.
+
+        Rooms are fetched concurrently (bounded by ContromeWebSession's own
+        semaphore) instead of one after another, so this no longer adds
+        roughly ``rooms * request_time`` of serial latency to every
+        coordinator update - the previous sequential loop meant a slow or
+        unreachable web UI delayed the existing temperature/humidity sensors
+        too, even though they don't depend on it at all.
         """
-        for floor in data:
-            for room in floor.get("raeume", []):
-                room_id = room.get("id")
-                if room_id is None:
-                    continue
-                try:
-                    room["heating_output"] = await self._web_session.async_get_regelschritt(
-                        room_id
-                    )
-                except ContromeWebAuthError:
-                    if not self._web_auth_failed_logged:
-                        _LOGGER.warning(
-                            "Controme web-UI login failed with the configured "
-                            "user/password. Heating output sensors will be "
-                            "unavailable until this is fixed"
-                        )
-                        self._web_auth_failed_logged = True
-                    room["heating_output"] = None
-                    continue
-                except Exception as ex:  # noqa: BLE001
-                    _LOGGER.debug(
-                        "Failed to fetch heating output for room %s: %s", room_id, ex
-                    )
-                    room["heating_output"] = None
-                    continue
-                self._web_auth_failed_logged = False
+        rooms = [
+            room
+            for floor in data
+            for room in floor.get("raeume", [])
+            if room.get("id") is not None
+        ]
+        if not rooms:
+            return
+
+        results = await asyncio.gather(
+            *(self._web_session.async_get_regelschritt(room["id"]) for room in rooms),
+            return_exceptions=True,
+        )
+
+        auth_failed = False
+        for room, result in zip(rooms, results):
+            if isinstance(result, ContromeWebAuthError):
+                auth_failed = True
+                room["heating_output"] = None
+            elif isinstance(result, BaseException):
+                _LOGGER.debug(
+                    "Failed to fetch heating output for room %s: %s",
+                    room["id"],
+                    result,
+                )
+                room["heating_output"] = None
+            else:
+                room["heating_output"] = result
+
+        if auth_failed:
+            if not self._web_auth_failed_logged:
+                _LOGGER.warning(
+                    "Controme web-UI login failed with the configured "
+                    "user/password. Heating output sensors will be "
+                    "unavailable until this is fixed"
+                )
+                self._web_auth_failed_logged = True
+        else:
+            self._web_auth_failed_logged = False
 
     async def _async_update_data(self) -> Dict[str, Any]:
         """Fetch data from Controme API."""
