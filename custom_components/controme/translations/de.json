@@ -64,7 +64,7 @@
                 "name": "Gesamtoffset"
             },
             "heating_output": {
-                "name": "Heizleistung"
+                "name": "Regelschritt"
             },
             "operation_mode": {
                 "name": "Betriebsart",

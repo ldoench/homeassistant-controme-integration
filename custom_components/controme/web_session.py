@@ -36,6 +36,10 @@ class ContromeWebAuthError(Exception):
     """Raised when the web-UI login fails (wrong credentials)."""
 
 
+class _SessionExpired(Exception):
+    """Internal signal that the session cookie is no longer valid."""
+
+
 class ContromeWebSession:
     """Manages a logged-in session against the Controme web UI."""
 
@@ -63,28 +67,47 @@ class ContromeWebSession:
         if not self._authenticated:
             await self._async_login()
 
-        value = await self._async_fetch_regelschritt(room_id)
-        if value is not None:
-            return value
-
-        # Session likely expired - log in once more and retry.
-        _LOGGER.debug("Regelschritt fetch failed, re-authenticating and retrying")
-        self._authenticated = False
-        await self._async_login()
-        return await self._async_fetch_regelschritt(room_id)
+        try:
+            return await self._async_fetch_regelschritt(room_id)
+        except _SessionExpired:
+            # Only re-authenticate when the server actually told us the
+            # session cookie is gone (redirect/401/403). A 200 response
+            # whose HTML just didn't contain the expected value is a parse
+            # problem, not an auth problem, and re-logging in on every poll
+            # for that would only hammer the device for no benefit.
+            _LOGGER.debug("Controme web session expired, re-authenticating and retrying")
+            self._authenticated = False
+            await self._async_login()
+            try:
+                return await self._async_fetch_regelschritt(room_id)
+            except _SessionExpired:
+                return None
 
     async def _async_fetch_regelschritt(self, room_id: int) -> Optional[float]:
         url = f"{self._base_url}{ROOM_FRAGMENT_PATH.format(room_id=room_id)}"
         async with self._session.get(
             url, timeout=REQUEST_TIMEOUT, allow_redirects=False
         ) as response:
+            if response.status in (301, 302, 401, 403):
+                # Redirected to the login page, or rejected outright: the
+                # session cookie is no longer valid.
+                raise _SessionExpired
             if response.status != 200:
-                # A 302 back to the login page means the session expired.
+                _LOGGER.debug(
+                    "Unexpected status %s fetching heating output for room %s",
+                    response.status,
+                    room_id,
+                )
                 return None
             html = await response.text()
 
         match = _BEAM_RE.search(html)
         if not match:
+            _LOGGER.debug(
+                "Could not find heating-output value in room %s page "
+                "(Controme web UI layout may have changed)",
+                room_id,
+            )
             return None
         try:
             return float(match.group(1))
