@@ -72,6 +72,17 @@
                     "heating": "Heizen",
                     "off": "Aus"
                 }
+            },
+            "active_scene": {
+                "name": "Aktive Szene"
+            },
+            "next_switch": {
+                "name": "Nächster Schaltpunkt"
+            }
+        },
+        "binary_sensor": {
+            "connectivity": {
+                "name": "{device} Verbindung"
             }
         },
         "climate": {

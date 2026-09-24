@@ -62,6 +62,18 @@ For each room, the integration creates:
 - Operation Mode
 - Heating Output %
 
+For the house, the integration additionally creates:
+
+### Hub Sensors
+- Active Scene - the temperature scene the heating program currently applies
+- Next Switch Point - time of the next heating-program change, with the scene as
+  attribute (disabled by default)
+
+### Connectivity (disabled by default)
+- One diagnostic binary sensor per gateway and per sensor, off when Controme has
+  not heard from the device for too long (red in the Controme app). Room sensors
+  are attached to their room, everything else to the hub.
+
 ## Supported Languages
 - English
 - German (Deutsch)

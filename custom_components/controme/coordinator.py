@@ -16,6 +16,9 @@ from .const import DOMAIN
 
 PERMISSIONS_ENDPOINT = "permissions"
 OUTPUTS_ENDPOINT = "outs"
+MARKER_ENDPOINT = "marker"
+SCENES_ENDPOINT = "temperaturszenen"
+PROGRAM_ENDPOINT = "heizprogramm"
 
 _LOGGER = logging.getLogger(__name__)
 REQUEST_TIMEOUT = ClientTimeout(total=10)
@@ -48,6 +51,12 @@ class ContromeDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             "can_make_permanent_changes": True,
             "can_make_temporary_changes": True,
         }
+        # House-level data from further read-only endpoints, refreshed with
+        # every update. Each stays at its last value's shape (empty) when its
+        # endpoint fails or the Controme module behind it is not active.
+        self.markers: list[dict[str, Any]] = []
+        self.scenes: list[dict[str, Any]] = []
+        self.switch_points: list[dict[str, Any]] = []
 
     @staticmethod
     def _normalize_output(raw: Any) -> int | None:
@@ -90,35 +99,20 @@ class ContromeDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         must keep working regardless. A room with several gateway outputs
         reports their mean opening.
         """
-        endpoint = f"{self._base_url}/get/json/v1/{self._house_id}/{OUTPUTS_ENDPOINT}/"
+        outs_data = await self._async_get_json(session, auth, OUTPUTS_ENDPOINT)
         outputs_by_room: Dict[int, list[int]] = {}
-        try:
-            async with session.get(
-                endpoint, auth=auth, timeout=REQUEST_TIMEOUT
-            ) as response:
-                if response.status != 200:
-                    raise UpdateFailed(f"status {response.status}")
-                outs_data = await response.json()
-            for floor in outs_data:
-                for room in floor.get("raeume", []):
-                    values = [
-                        value
-                        for value in map(
-                            self._normalize_output,
-                            (room.get("ausgang") or {}).values(),
-                        )
-                        if value is not None
-                    ]
-                    if room.get("id") is not None and values:
-                        outputs_by_room[room["id"]] = values
-        except (
-            aiohttp.ClientError,
-            asyncio.TimeoutError,
-            UpdateFailed,
-            ValueError,
-            AttributeError,
-        ) as ex:
-            _LOGGER.debug("Failed to fetch heating outputs: %s", ex)
+        for floor in outs_data if isinstance(outs_data, list) else []:
+            for room in floor.get("raeume", []):
+                values = [
+                    value
+                    for value in map(
+                        self._normalize_output,
+                        (room.get("ausgang") or {}).values(),
+                    )
+                    if value is not None
+                ]
+                if room.get("id") is not None and values:
+                    outputs_by_room[room["id"]] = values
 
         for floor in data:
             for room in floor.get("raeume", []):
@@ -126,6 +120,41 @@ class ContromeDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 room["heating_output"] = (
                     round(sum(values) / len(values)) if values else None
                 )
+
+    async def _async_get_json(
+        self, session: aiohttp.ClientSession, auth: aiohttp.BasicAuth, name: str
+    ) -> Any:
+        """GET one JSON API endpoint of this house, None on any failure."""
+        endpoint = f"{self._base_url}/get/json/v1/{self._house_id}/{name}/"
+        try:
+            async with session.get(
+                endpoint, auth=auth, timeout=REQUEST_TIMEOUT
+            ) as response:
+                if response.status != 200:
+                    _LOGGER.debug("%s returned status %s", name, response.status)
+                    return None
+                return await response.json()
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as ex:
+            _LOGGER.debug("Failed to fetch %s: %s", name, ex)
+            return None
+
+    async def _async_fetch_house_extras(
+        self, session: aiohttp.ClientSession, auth: aiohttp.BasicAuth
+    ) -> None:
+        """Fetch sensor markers, temperature scenes and heating-program switches.
+
+        Best-effort like the heating output: these feed optional entities
+        only, so a failure must not fail the coordinator update.
+        """
+        markers, scenes, switch_points = await asyncio.gather(
+            self._async_get_json(session, auth, MARKER_ENDPOINT),
+            self._async_get_json(session, auth, SCENES_ENDPOINT),
+            self._async_get_json(session, auth, PROGRAM_ENDPOINT),
+        )
+        self.markers = markers if isinstance(markers, list) else []
+        # Without the corresponding Controme module these endpoints answer {}.
+        self.scenes = scenes if isinstance(scenes, list) else []
+        self.switch_points = switch_points if isinstance(switch_points, list) else []
 
     async def _async_update_data(self) -> Dict[str, Any]:
         """Fetch data from Controme API."""
@@ -197,7 +226,10 @@ class ContromeDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                         }
                         _LOGGER.debug("Sample room data: %s", safe_sample)
 
-                await self._async_merge_heating_output(session, auth, data)
+                await asyncio.gather(
+                    self._async_merge_heating_output(session, auth, data),
+                    self._async_fetch_house_extras(session, auth),
+                )
 
                 return data
             except ConfigEntryAuthFailed:

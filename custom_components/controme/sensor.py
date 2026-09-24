@@ -16,6 +16,7 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
 from .device import link_to_hub
 from .const import (
@@ -29,6 +30,7 @@ from .const import (
 from dataclasses import dataclass
 
 _LOGGER = logging.getLogger(__name__)
+CONTROME_TIME_ZONE = dt_util.get_time_zone("Europe/Berlin")
 PARALLEL_UPDATES = 1
 
 @dataclass
@@ -170,6 +172,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                             )
                         )
                     _LOGGER.debug("Return sensor added")
+
+    hub_device = DeviceInfo(identifiers={(DOMAIN, house_id)})
+    sensors.append(ContromeActiveSceneSensor(coordinator, house_id, hub_device))
+    sensors.append(ContromeNextSwitchSensor(coordinator, house_id, hub_device))
 
     _LOGGER.debug("Created %d sensors in total", len(sensors))
     async_add_entities(sensors)
@@ -324,3 +330,87 @@ class ContromeOperationModeSensor(CoordinatorEntity, SensorEntity):
         """Update the sensor state from room data."""
         value = room_data.get(VALUE_MAP["operation_mode"])
         self._attr_native_value = value
+
+
+class ContromeActiveSceneSensor(CoordinatorEntity, SensorEntity):
+    """Temperature scene (Temperaturszene) currently applied by Controme."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "active_scene"
+    _attr_icon = "mdi:home-thermometer"
+
+    def __init__(self, coordinator, house_id, device_info):
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{house_id}_active_scene"
+        self._attr_device_info = device_info
+        self._update_from_coordinator()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        self._update_from_coordinator()
+        self.async_write_ha_state()
+
+    def _update_from_coordinator(self) -> None:
+        # A scene is active when the heating program has applied it to its
+        # rooms; Controme flags that per room, so any flagged room counts.
+        active = next(
+            (
+                scene
+                for scene in self.coordinator.scenes
+                if any(room.get("active") for room in scene.get("raeume", []))
+            ),
+            None,
+        )
+        self._attr_native_value = active.get("Name") if active else None
+        self._attr_extra_state_attributes = (
+            {"scene_id": active.get("id")} if active else {}
+        )
+
+
+class ContromeNextSwitchSensor(CoordinatorEntity, SensorEntity):
+    """Time and scene of the heating program's next switch point."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "next_switch"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_registry_enabled_default = False
+
+    def __init__(self, coordinator, house_id, device_info):
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{house_id}_next_switch"
+        self._attr_device_info = device_info
+        self._update_from_coordinator()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        self._update_from_coordinator()
+        self.async_write_ha_state()
+
+    def _update_from_coordinator(self) -> None:
+        # The heizprogramm endpoint lists the switch points of all heating
+        # programs from today until Sunday as naive Europe/Berlin times
+        # (hard-coded on the Miniserver), with "active" marking the running
+        # program. The next week is not included, so after Sunday's last
+        # switch point this stays unknown until Monday.
+        now = dt_util.now()
+        upcoming = []
+        for point in self.coordinator.switch_points:
+            when = dt_util.parse_datetime(str(point.get("next_due_time")))
+            if not point.get("active") or when is None:
+                continue
+            when = when.replace(tzinfo=CONTROME_TIME_ZONE)
+            if when > now:
+                upcoming.append((when, point.get("name")))
+
+        if not upcoming:
+            self._attr_native_value = None
+            self._attr_extra_state_attributes = {}
+            return
+
+        when, scene = min(upcoming, key=lambda item: item[0])
+        self._attr_native_value = when
+        self._attr_extra_state_attributes = {"scene": scene}
