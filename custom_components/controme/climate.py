@@ -7,6 +7,7 @@ from datetime import timedelta
 from homeassistant.components.climate import (
     ClimateEntity,
     ClimateEntityFeature,
+    HVACAction,
     HVACMode,
 )
 from homeassistant.config_entries import ConfigEntry
@@ -152,6 +153,24 @@ class ContromeClimate(CoordinatorEntity, ClimateEntity):
             self._attr_hvac_mode = HVACMode.COOL
         else:
             self._attr_hvac_mode = HVACMode.OFF
+
+        # "betriebsart" is the plant's operating mode (heating season) and
+        # stays "heating" all winter, so on its own HA would always show
+        # "Heating". Whether the room is actually heating right now comes
+        # from the scraped Regelschritt (valve output 0-100 %).
+        heating_output = data.get("heating_output")
+        if self._attr_hvac_mode == HVACMode.OFF:
+            self._attr_hvac_action = HVACAction.OFF
+        elif heating_output is None:
+            self._attr_hvac_action = None
+        elif heating_output > 0:
+            self._attr_hvac_action = (
+                HVACAction.COOLING
+                if self._attr_hvac_mode == HVACMode.COOL
+                else HVACAction.HEATING
+            )
+        else:
+            self._attr_hvac_action = HVACAction.IDLE
 
         # Handle humidity values - set to 0 if no value is available
         humidity = data.get("luftfeuchte")
