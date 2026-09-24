@@ -13,9 +13,9 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DOMAIN
-from .web_session import ContromeWebAuthError, ContromeWebSession
 
 PERMISSIONS_ENDPOINT = "permissions"
+OUTPUTS_ENDPOINT = "outs"
 
 _LOGGER = logging.getLogger(__name__)
 REQUEST_TIMEOUT = ClientTimeout(total=10)
@@ -49,72 +49,83 @@ class ContromeDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             "can_make_temporary_changes": True,
         }
 
-        # The heating-output ("Regelschritt") sensor is scraped from the
-        # logged-in web UI, which is not covered by the JSON API's Basic
-        # Auth above. Controme accepts the same account for both, so this
-        # reuses the API username/password rather than asking for separate
-        # web-UI credentials.
-        self._web_session = ContromeWebSession(base_url, username, password)
-        self._web_auth_failed_logged = False
+    @staticmethod
+    def _normalize_output(raw: Any) -> int | None:
+        """Convert one raw ``/outs/`` value to a 0-100 % opening.
 
-    async def async_close(self) -> None:
-        """Release resources held by the coordinator."""
-        await self._web_session.async_close()
+        ``/outs/`` returns what the Miniserver last sent to the gateway output
+        (the same ``lastout_*`` cache entry the web UI's "Regelschritt" bar is
+        drawn from), but unlike the web UI it does not scale it:
 
-    async def _async_merge_heating_output(self, data: list) -> None:
-        """Fetch the heating-output percentage per room and merge it in.
+        - Relay gateways (firmware < 5.00, and the Ruecklaufregelung /
+          Zweipunktregelung on any gateway) switch 0/1 - a thermal actuator is
+          either powered or not, there is no intermediate position.
+        - Analog 0-10 V gateways (firmware 5.x) report the opening as 0-99.
 
-        Best-effort: any failure here (wrong web credentials, UI unreachable,
-        page layout changed) is logged and leaves ``heating_output`` as None
-        for this cycle rather than failing the whole update - the temperature
-        sensors must keep working regardless.
-
-        Rooms are fetched concurrently (bounded by ContromeWebSession's own
-        semaphore) instead of one after another, so this no longer adds
-        roughly ``rooms * request_time`` of serial latency to every
-        coordinator update - the previous sequential loop meant a slow or
-        unreachable web UI delayed the existing temperature/humidity sensors
-        too, even though they don't depend on it at all.
+        So 1 means "on" and maps to 100 % (the web UI does the same for relay
+        gateways, but shows a Ruecklaufregelung "on" on a 5.x gateway as 1 %,
+        which is misleading). An analog output at exactly 1 % would be misread
+        as fully open, which is acceptable: the API does not expose the gateway
+        firmware to tell them apart, and 1 % is not a meaningful opening.
         """
-        rooms = [
-            room
-            for floor in data
-            for room in floor.get("raeume", [])
-            if room.get("id") is not None
-        ]
-        if not rooms:
-            return
+        if raw is None:
+            return None
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return None
+        if value <= 0:
+            return 0
+        if value == 1:
+            return 100
+        return min(value, 100)
 
-        results = await asyncio.gather(
-            *(self._web_session.async_get_regelschritt(room["id"]) for room in rooms),
-            return_exceptions=True,
-        )
+    async def _async_merge_heating_output(
+        self, session: aiohttp.ClientSession, auth: aiohttp.BasicAuth, data: list
+    ) -> None:
+        """Fetch the heating output per room from ``/outs/`` and merge it in.
 
-        auth_failed = False
-        for room, result in zip(rooms, results):
-            if isinstance(result, ContromeWebAuthError):
-                auth_failed = True
-                room["heating_output"] = None
-            elif isinstance(result, BaseException):
-                _LOGGER.debug(
-                    "Failed to fetch heating output for room %s: %s",
-                    room["id"],
-                    result,
+        Best-effort: a failure here leaves ``heating_output`` as None for this
+        cycle rather than failing the whole update - the temperature sensors
+        must keep working regardless. A room with several gateway outputs
+        reports their mean opening.
+        """
+        endpoint = f"{self._base_url}/get/json/v1/{self._house_id}/{OUTPUTS_ENDPOINT}/"
+        outputs_by_room: Dict[int, list[int]] = {}
+        try:
+            async with session.get(
+                endpoint, auth=auth, timeout=REQUEST_TIMEOUT
+            ) as response:
+                if response.status != 200:
+                    raise UpdateFailed(f"status {response.status}")
+                outs_data = await response.json()
+            for floor in outs_data:
+                for room in floor.get("raeume", []):
+                    values = [
+                        value
+                        for value in map(
+                            self._normalize_output,
+                            (room.get("ausgang") or {}).values(),
+                        )
+                        if value is not None
+                    ]
+                    if room.get("id") is not None and values:
+                        outputs_by_room[room["id"]] = values
+        except (
+            aiohttp.ClientError,
+            asyncio.TimeoutError,
+            UpdateFailed,
+            ValueError,
+            AttributeError,
+        ) as ex:
+            _LOGGER.debug("Failed to fetch heating outputs: %s", ex)
+
+        for floor in data:
+            for room in floor.get("raeume", []):
+                values = outputs_by_room.get(room.get("id"))
+                room["heating_output"] = (
+                    round(sum(values) / len(values)) if values else None
                 )
-                room["heating_output"] = None
-            else:
-                room["heating_output"] = result
-
-        if auth_failed:
-            if not self._web_auth_failed_logged:
-                _LOGGER.warning(
-                    "Controme web-UI login failed with the configured "
-                    "user/password. Heating output sensors will be "
-                    "unavailable until this is fixed"
-                )
-                self._web_auth_failed_logged = True
-        else:
-            self._web_auth_failed_logged = False
 
     async def _async_update_data(self) -> Dict[str, Any]:
         """Fetch data from Controme API."""
@@ -186,7 +197,7 @@ class ContromeDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                         }
                         _LOGGER.debug("Sample room data: %s", safe_sample)
 
-                await self._async_merge_heating_output(data)
+                await self._async_merge_heating_output(session, auth, data)
 
                 return data
             except ConfigEntryAuthFailed:

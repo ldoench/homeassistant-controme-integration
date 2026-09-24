@@ -40,9 +40,10 @@ Home Assistant integration for Controme heating systems. This integration allows
    - Username
    - Password
 
-   These same credentials are also used to read the heating output sensor from the
-   Controme web UI (which has no separate JSON API) - the integration logs in and
-   refreshes that session on its own.
+   The heating output sensor is read from the JSON API's `/outs/` endpoint, so no
+   web-UI login is needed. On relay gateways (firmware < 5.00) and with the
+   Ruecklaufregelung it is 0 % or 100 % only; intermediate values need an analog
+   (0-10 V, firmware 5.x) gateway.
 
 ## Entities Created
 
